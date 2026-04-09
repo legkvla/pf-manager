@@ -175,6 +175,18 @@ base_conf_source() {
   die "unable to find a PF configuration to render from"
 }
 
+installed_script_needs_update() {
+  if [ ! -f "$INSTALLED_SCRIPT" ]; then
+    return 0
+  fi
+
+  if cmp -s "$SELF_PATH" "$INSTALLED_SCRIPT"; then
+    return 1
+  fi
+
+  return 0
+}
+
 write_anchor() {
   ensure_dir "$STATE_DIR"
   render_anchor | write_if_changed "$ANCHOR_CONF" 600
@@ -369,6 +381,7 @@ cmd_uninstall() {
 
 cmd_status() {
   printf 'label: %s\n' "$LABEL"
+  printf 'current_script: %s\n' "$SELF_PATH"
   printf 'managed_main_conf: %s\n' "$MAIN_CONF"
   printf 'anchor_conf: %s\n' "$ANCHOR_CONF"
   printf 'base_backup: %s\n' "$BASE_BACKUP"
@@ -379,6 +392,7 @@ cmd_status() {
   printf 'base_backup_exists: %s\n' "$( [ -f "$BASE_BACKUP" ] && printf yes || printf no )"
   printf 'launchd_plist_exists: %s\n' "$( [ -f "$PLIST_PATH" ] && printf yes || printf no )"
   printf 'managed_marker_present: %s\n' "$( managed_file "$MAIN_CONF" && printf yes || printf no )"
+  printf 'installed_script_needs_update: %s\n' "$( installed_script_needs_update && printf yes || printf no )"
 
   if [ "$SKIP_PFCTL" = "1" ]; then
     printf 'pf_enabled: skipped\n'
