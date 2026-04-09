@@ -60,3 +60,7 @@ sudo ./pf-manager.sh uninstall
 - The daemon checks both `pfctl -s rules` for `anchor "pf-manager" all` and `pfctl -a pf-manager -s rules` for the managed rule marker, and reloads PF if either check fails or PF is disabled.
 - `uninstall` restores the preserved base config instead of disabling PF entirely.
 - For staged local testing without touching the live system, set `PFM_ALLOW_UNPRIVILEGED=1`, `PFM_SKIP_PFCTL=1`, and `PFM_LAUNCHD_BOOTSTRAP=0`, then override the destination paths into a writable temp directory.
+
+## License
+
+MIT. See `LICENSE`.
