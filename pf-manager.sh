@@ -14,6 +14,10 @@ STATE_DIR="${PFM_STATE_DIR:-$VAR_ETC_DIR/pf-manager}"
 MAIN_CONF="${PFM_MAIN_CONF:-$VAR_ETC_DIR/pf.conf}"
 BASE_BACKUP="${PFM_BASE_BACKUP:-$STATE_DIR/base.pf.conf}"
 ANCHOR_CONF="${PFM_ANCHOR_CONF:-$STATE_DIR/pf-manager.anchor}"
+ETC_MAIN_CONF="${PFM_ETC_MAIN_CONF:-/etc/pf.conf}"
+ETC_MAIN_BACKUP="${PFM_ETC_MAIN_BACKUP:-$STATE_DIR/etc.pf.conf.backup}"
+ETC_ANCHOR_CONF="${PFM_ETC_ANCHOR_CONF:-/etc/pf.anchors/$ANCHOR_NAME}"
+ETC_ANCHOR_BACKUP="${PFM_ETC_ANCHOR_BACKUP:-$STATE_DIR/etc.pf.anchors.$ANCHOR_NAME.backup}"
 
 INSTALL_DIR="${PFM_INSTALL_DIR:-/usr/local/libexec/pf-manager}"
 INSTALLED_SCRIPT="${PFM_INSTALLED_SCRIPT:-$INSTALL_DIR/pf-manager.sh}"
@@ -130,45 +134,76 @@ EOF
 }
 
 ensure_base_backup() {
+  ensure_main_backup "$MAIN_CONF" "$BASE_BACKUP" "$ETC_MAIN_CONF"
+}
+
+ensure_main_backup() {
+  main_file="$1"
+  backup_file="$2"
+  fallback_file="${3:-}"
+
   ensure_dir "$STATE_DIR"
 
-  if [ -f "$BASE_BACKUP" ]; then
+  if [ -f "$backup_file" ]; then
     return 0
   fi
 
-  if [ -f "$MAIN_CONF" ]; then
-    if managed_file "$MAIN_CONF"; then
-      strip_managed_section "$MAIN_CONF" | write_file "$BASE_BACKUP" 600
+  if [ -f "$main_file" ]; then
+    if managed_file "$main_file"; then
+      strip_managed_section "$main_file" | write_file "$backup_file" 600
       return 0
     fi
 
-    cp "$MAIN_CONF" "$BASE_BACKUP"
-    chmod 600 "$BASE_BACKUP"
+    cp "$main_file" "$backup_file"
+    chmod 600 "$backup_file"
     return 0
   fi
 
-  if [ -f /etc/pf.conf ]; then
-    cp /etc/pf.conf "$BASE_BACKUP"
-    chmod 600 "$BASE_BACKUP"
+  if [ -n "$fallback_file" ] && [ -f "$fallback_file" ]; then
+    cp "$fallback_file" "$backup_file"
+    chmod 600 "$backup_file"
     return 0
   fi
 
   die "unable to find a base PF configuration to preserve"
 }
 
+ensure_system_backups() {
+  ensure_main_backup "$ETC_MAIN_CONF" "$ETC_MAIN_BACKUP" "$MAIN_CONF"
+
+  if [ -f "$ETC_ANCHOR_BACKUP" ]; then
+    return 0
+  fi
+
+  ensure_dir "$STATE_DIR"
+
+  if [ -f "$ETC_ANCHOR_CONF" ]; then
+    cp "$ETC_ANCHOR_CONF" "$ETC_ANCHOR_BACKUP"
+    chmod 600 "$ETC_ANCHOR_BACKUP"
+    return 0
+  fi
+
+  : >"$ETC_ANCHOR_BACKUP"
+  chmod 000 "$ETC_ANCHOR_BACKUP"
+}
+
 base_conf_source() {
-  if [ -f "$BASE_BACKUP" ]; then
-    printf '%s\n' "$BASE_BACKUP"
+  backup_file="$1"
+  main_file="$2"
+  fallback_file="${3:-}"
+
+  if [ -f "$backup_file" ]; then
+    printf '%s\n' "$backup_file"
     return 0
   fi
 
-  if [ -f "$MAIN_CONF" ]; then
-    printf '%s\n' "$MAIN_CONF"
+  if [ -f "$main_file" ]; then
+    printf '%s\n' "$main_file"
     return 0
   fi
 
-  if [ -f /etc/pf.conf ]; then
-    printf '%s\n' /etc/pf.conf
+  if [ -n "$fallback_file" ] && [ -f "$fallback_file" ]; then
+    printf '%s\n' "$fallback_file"
     return 0
   fi
 
@@ -192,15 +227,27 @@ write_anchor() {
   render_anchor | write_if_changed "$ANCHOR_CONF" 600
 }
 
-render_main() {
-  strip_managed_section "$(base_conf_source)"
+write_system_anchor() {
+  ensure_dir "$(dirname "$ETC_ANCHOR_CONF")"
+  render_anchor | write_if_changed "$ETC_ANCHOR_CONF" 600
+}
+
+render_main_with_paths() {
+  base_source="$1"
+  anchor_path="$2"
+
+  strip_managed_section "$base_source"
   cat <<EOF
 
 $MARKER_BEGIN
 anchor "$ANCHOR_NAME"
-load anchor "$ANCHOR_NAME" from "$ANCHOR_CONF"
+load anchor "$ANCHOR_NAME" from "$anchor_path"
 $MARKER_END
 EOF
+}
+
+render_main() {
+  render_main_with_paths "$(base_conf_source "$BASE_BACKUP" "$MAIN_CONF" "$ETC_MAIN_CONF")" "$ANCHOR_CONF"
 }
 
 pf_enabled() {
@@ -258,6 +305,21 @@ write_main_conf() {
   fi
 
   mv "$tmp" "$MAIN_CONF"
+}
+
+write_system_main_conf() {
+  ensure_dir "$(dirname "$ETC_MAIN_CONF")"
+  tmp="$(make_tmp)"
+  render_main_with_paths "$(base_conf_source "$ETC_MAIN_BACKUP" "$ETC_MAIN_CONF" "$MAIN_CONF")" "$ETC_ANCHOR_CONF" >"$tmp"
+  validate_main_conf "$tmp"
+  chmod 600 "$tmp"
+
+  if [ -f "$ETC_MAIN_CONF" ] && cmp -s "$tmp" "$ETC_MAIN_CONF"; then
+    rm -f "$tmp"
+    return 0
+  fi
+
+  mv "$tmp" "$ETC_MAIN_CONF"
 }
 
 render_plist() {
@@ -328,8 +390,11 @@ cmd_install() {
   require_root
   install_script
   ensure_base_backup
+  ensure_system_backups
   write_anchor
+  write_system_anchor
   write_main_conf
+  write_system_main_conf
   write_plist
   load_pf
   bootstrap_launchd
@@ -338,16 +403,22 @@ cmd_install() {
 cmd_apply() {
   require_root
   ensure_base_backup
+  ensure_system_backups
   write_anchor
+  write_system_anchor
   write_main_conf
+  write_system_main_conf
   load_pf
 }
 
 cmd_daemon() {
   require_root
   ensure_base_backup
+  ensure_system_backups
   write_anchor
+  write_system_anchor
   write_main_conf
+  write_system_main_conf
 
   if ! pf_enabled || ! anchor_loaded || ! managed_rules_loaded; then
     load_pf
@@ -368,7 +439,23 @@ cmd_uninstall() {
     fi
   fi
 
+  if [ -f "$ETC_MAIN_BACKUP" ]; then
+    ensure_dir "$(dirname "$ETC_MAIN_CONF")"
+    cp "$ETC_MAIN_BACKUP" "$ETC_MAIN_CONF"
+    chmod 600 "$ETC_MAIN_CONF"
+  fi
+
+  if [ -s "$ETC_ANCHOR_BACKUP" ]; then
+    ensure_dir "$(dirname "$ETC_ANCHOR_CONF")"
+    cp "$ETC_ANCHOR_BACKUP" "$ETC_ANCHOR_CONF"
+    chmod 600 "$ETC_ANCHOR_CONF"
+  else
+    rm -f "$ETC_ANCHOR_CONF"
+  fi
+
   rm -f "$BASE_BACKUP"
+  rm -f "$ETC_MAIN_BACKUP"
+  rm -f "$ETC_ANCHOR_BACKUP"
   rm -f "$ANCHOR_CONF"
   rm -f "$INSTALLED_SCRIPT"
   if ! rmdir "$INSTALL_DIR"; then
@@ -385,13 +472,22 @@ cmd_status() {
   printf 'managed_main_conf: %s\n' "$MAIN_CONF"
   printf 'anchor_conf: %s\n' "$ANCHOR_CONF"
   printf 'base_backup: %s\n' "$BASE_BACKUP"
+  printf 'etc_main_conf: %s\n' "$ETC_MAIN_CONF"
+  printf 'etc_main_backup: %s\n' "$ETC_MAIN_BACKUP"
+  printf 'etc_anchor_conf: %s\n' "$ETC_ANCHOR_CONF"
+  printf 'etc_anchor_backup: %s\n' "$ETC_ANCHOR_BACKUP"
   printf 'launchd_plist: %s\n' "$PLIST_PATH"
   printf 'installed_script: %s\n' "$INSTALLED_SCRIPT"
   printf 'main_conf_exists: %s\n' "$( [ -f "$MAIN_CONF" ] && printf yes || printf no )"
   printf 'anchor_exists: %s\n' "$( [ -f "$ANCHOR_CONF" ] && printf yes || printf no )"
   printf 'base_backup_exists: %s\n' "$( [ -f "$BASE_BACKUP" ] && printf yes || printf no )"
+  printf 'etc_main_conf_exists: %s\n' "$( [ -f "$ETC_MAIN_CONF" ] && printf yes || printf no )"
+  printf 'etc_main_backup_exists: %s\n' "$( [ -f "$ETC_MAIN_BACKUP" ] && printf yes || printf no )"
+  printf 'etc_anchor_conf_exists: %s\n' "$( [ -f "$ETC_ANCHOR_CONF" ] && printf yes || printf no )"
+  printf 'etc_anchor_backup_exists: %s\n' "$( [ -f "$ETC_ANCHOR_BACKUP" ] && printf yes || printf no )"
   printf 'launchd_plist_exists: %s\n' "$( [ -f "$PLIST_PATH" ] && printf yes || printf no )"
   printf 'managed_marker_present: %s\n' "$( managed_file "$MAIN_CONF" && printf yes || printf no )"
+  printf 'etc_managed_marker_present: %s\n' "$( managed_file "$ETC_MAIN_CONF" && printf yes || printf no )"
   printf 'installed_script_needs_update: %s\n' "$( installed_script_needs_update && printf yes || printf no )"
 
   if [ "$SKIP_PFCTL" = "1" ]; then

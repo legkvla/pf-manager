@@ -6,9 +6,10 @@ It does three things:
 
 1. Preserves the existing PF ruleset as a base config.
 2. Generates a managed `/var/etc/pf.conf` that loads a dedicated `pf-manager` anchor.
-3. Installs a `LaunchDaemon` that reapplies the managed config after boot and if PF is rewritten later.
+3. Mirrors the same managed rules into `/etc/pf.conf` and `/etc/pf.anchors/pf-manager` for compatibility with default PF activation paths.
+4. Installs a `LaunchDaemon` that reapplies the managed config after boot and if PF is rewritten later.
 
-macOS can rewrite `/etc/pf.conf`, so the managed config is written to `/var/etc/pf.conf` and reloaded from there.
+macOS can rewrite `/etc/pf.conf`, so the daemon still reloads PF from `/var/etc/pf.conf` while also keeping `/etc/pf.conf` and `/etc/pf.anchors/pf-manager` in sync.
 
 ## Managed rules
 
@@ -51,6 +52,8 @@ sudo ./pf-manager.sh uninstall
 - Managed PF config: `/var/etc/pf.conf`
 - Preserved base config: `/var/etc/pf-manager/base.pf.conf`
 - Managed anchor: `/var/etc/pf-manager/pf-manager.anchor`
+- Mirrored default PF config: `/etc/pf.conf`
+- Mirrored default anchor: `/etc/pf.anchors/pf-manager`
 - Installed script: `/usr/local/libexec/pf-manager/pf-manager.sh`
 - LaunchDaemon: `/Library/LaunchDaemons/com.pf-manager.guardian.plist`
 
@@ -59,7 +62,7 @@ sudo ./pf-manager.sh uninstall
 - The daemon runs at load and every 15 seconds by default.
 - The daemon checks both `pfctl -s rules` for `anchor "pf-manager" all` and `pfctl -a pf-manager -s rules` for the managed rule marker, and reloads PF if either check fails or PF is disabled.
 - `uninstall` restores the preserved base config instead of disabling PF entirely.
-- For staged local testing without touching the live system, set `PFM_ALLOW_UNPRIVILEGED=1`, `PFM_SKIP_PFCTL=1`, and `PFM_LAUNCHD_BOOTSTRAP=0`, then override the destination paths into a writable temp directory.
+- For staged local testing without touching the live system, set `PFM_ALLOW_UNPRIVILEGED=1`, `PFM_SKIP_PFCTL=1`, and `PFM_LAUNCHD_BOOTSTRAP=0`, then override both the `/var/etc` and `/etc` destination paths into a writable temp directory.
 
 ## License
 
