@@ -22,6 +22,7 @@ PLIST_PATH="${PFM_PLIST_PATH:-$LAUNCHD_DIR/$LABEL.plist}"
 
 MARKER_BEGIN="# BEGIN pf-manager"
 MARKER_END="# END pf-manager"
+MAIN_RULE_MARKER='anchor "pf-manager" all'
 LIVE_RULE_MARKER='block drop in quick proto tcp from any to any port = 22'
 
 SELF_PATH="$(CDPATH= cd -- "$(dirname "$0")" && pwd)/$(basename "$0")"
@@ -212,6 +213,14 @@ managed_rules_loaded() {
   /sbin/pfctl -a "$ANCHOR_NAME" -s rules | grep -Fqx "$LIVE_RULE_MARKER"
 }
 
+anchor_loaded() {
+  if [ "$SKIP_PFCTL" = "1" ]; then
+    return 1
+  fi
+
+  /sbin/pfctl -s rules | grep -Fqx "$MAIN_RULE_MARKER"
+}
+
 load_pf() {
   if [ "$SKIP_PFCTL" = "1" ]; then
     return 0
@@ -328,7 +337,7 @@ cmd_daemon() {
   write_anchor
   write_main_conf
 
-  if ! pf_enabled || ! managed_rules_loaded; then
+  if ! pf_enabled || ! anchor_loaded || ! managed_rules_loaded; then
     load_pf
   fi
 }
@@ -373,12 +382,15 @@ cmd_status() {
 
   if [ "$SKIP_PFCTL" = "1" ]; then
     printf 'pf_enabled: skipped\n'
+    printf 'main_anchor_loaded: skipped\n'
     printf 'live_rule_marker_loaded: skipped\n'
   elif pf_enabled; then
     printf 'pf_enabled: yes\n'
+    printf 'main_anchor_loaded: %s\n' "$( anchor_loaded && printf yes || printf no )"
     printf 'live_rule_marker_loaded: %s\n' "$( managed_rules_loaded && printf yes || printf no )"
   else
     printf 'pf_enabled: no\n'
+    printf 'main_anchor_loaded: no\n'
     printf 'live_rule_marker_loaded: no\n'
   fi
 }
