@@ -3,11 +3,13 @@
 set -eu
 
 LABEL="${PFM_LABEL:-com.pf-manager.guardian}"
+CAFFEINATE_LABEL="${PFM_CAFFEINATE_LABEL:-com.pf-manager.caffeinate}"
 INTERVAL="${PFM_INTERVAL:-15}"
 ALLOW_UNPRIVILEGED="${PFM_ALLOW_UNPRIVILEGED:-0}"
 SKIP_PFCTL="${PFM_SKIP_PFCTL:-0}"
 LAUNCHD_BOOTSTRAP="${PFM_LAUNCHD_BOOTSTRAP:-1}"
 ANCHOR_NAME="${PFM_ANCHOR_NAME:-pf-manager}"
+CAFFEINATE_ARGS="${PFM_CAFFEINATE_ARGS:--dimsu}"
 
 VAR_ETC_DIR="${PFM_VAR_ETC_DIR:-/var/etc}"
 STATE_DIR="${PFM_STATE_DIR:-$VAR_ETC_DIR/pf-manager}"
@@ -23,6 +25,7 @@ INSTALL_DIR="${PFM_INSTALL_DIR:-/usr/local/libexec/pf-manager}"
 INSTALLED_SCRIPT="${PFM_INSTALLED_SCRIPT:-$INSTALL_DIR/pf-manager.sh}"
 LAUNCHD_DIR="${PFM_LAUNCHD_DIR:-/Library/LaunchDaemons}"
 PLIST_PATH="${PFM_PLIST_PATH:-$LAUNCHD_DIR/$LABEL.plist}"
+CAFFEINATE_PLIST_PATH="${PFM_CAFFEINATE_PLIST_PATH:-$LAUNCHD_DIR/$CAFFEINATE_LABEL.plist}"
 
 MARKER_BEGIN="# BEGIN pf-manager"
 MARKER_END="# END pf-manager"
@@ -50,19 +53,25 @@ Usage: $(basename "$0") <command>
 
 Commands:
   install         Install the managed PF config and LaunchDaemon
-  uninstall       Remove the LaunchDaemon and restore the previous PF config
+  install-caffeinate
+                  Install only the caffeinate LaunchDaemon
+  uninstall       Remove the LaunchDaemons and restore the previous PF config
   apply           Regenerate the managed PF config and load it into PF
   daemon          LaunchDaemon entrypoint; equivalent to apply
   status          Print the current configuration status
   render-anchor   Print the anchor rules to stdout
   render-main     Print the generated main PF config to stdout
-  render-plist    Print the generated LaunchDaemon plist to stdout
+  render-plist    Print the generated PF guardian LaunchDaemon plist to stdout
+  render-caffeinate-plist
+                  Print the generated caffeinate LaunchDaemon plist to stdout
   help            Show this help text
 
 Important environment overrides:
   PFM_ALLOW_UNPRIVILEGED=1  Allow staged installs without root
   PFM_SKIP_PFCTL=1          Skip live pfctl validation and reloads
   PFM_LAUNCHD_BOOTSTRAP=0   Skip launchctl bootstrap/bootout operations
+  PFM_CAFFEINATE_ARGS=-dimsu
+                             Override caffeinate assertion flags
 EOF
 }
 
@@ -350,9 +359,36 @@ render_plist() {
 EOF
 }
 
+render_caffeinate_plist() {
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$CAFFEINATE_LABEL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/caffeinate</string>
+    <string>$CAFFEINATE_ARGS</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+</dict>
+</plist>
+EOF
+}
+
 write_plist() {
   ensure_dir "$LAUNCHD_DIR"
   render_plist | write_if_changed "$PLIST_PATH" 644
+}
+
+write_caffeinate_plist() {
+  ensure_dir "$LAUNCHD_DIR"
+  render_caffeinate_plist | write_if_changed "$CAFFEINATE_PLIST_PATH" 644
 }
 
 install_script() {
@@ -363,27 +399,42 @@ install_script() {
   chmod 755 "$INSTALLED_SCRIPT"
 }
 
-bootstrap_launchd() {
+bootstrap_launchd_plist() {
+  plist="$1"
+  label="$2"
+
   if [ "$LAUNCHD_BOOTSTRAP" != "1" ]; then
     return 0
   fi
 
-  if ! /bin/launchctl bootout system "$PLIST_PATH"; then
-    warn "launchctl bootout failed for $PLIST_PATH; continuing with bootstrap"
+  if ! /bin/launchctl bootout system "$plist"; then
+    warn "launchctl bootout failed for $plist; continuing with bootstrap"
   fi
-  /bin/launchctl bootstrap system "$PLIST_PATH"
-  /bin/launchctl enable "system/$LABEL"
-  /bin/launchctl kickstart -k "system/$LABEL" >/dev/null
+  /bin/launchctl bootstrap system "$plist"
+  /bin/launchctl enable "system/$label"
+  /bin/launchctl kickstart -k "system/$label" >/dev/null
+}
+
+bootstrap_launchd() {
+  bootstrap_launchd_plist "$PLIST_PATH" "$LABEL"
+  bootstrap_launchd_plist "$CAFFEINATE_PLIST_PATH" "$CAFFEINATE_LABEL"
+}
+
+bootout_launchd_plist() {
+  plist="$1"
+
+  if [ "$LAUNCHD_BOOTSTRAP" != "1" ]; then
+    return 0
+  fi
+
+  if ! /bin/launchctl bootout system "$plist"; then
+    warn "launchctl bootout failed for $plist"
+  fi
 }
 
 bootout_launchd() {
-  if [ "$LAUNCHD_BOOTSTRAP" != "1" ]; then
-    return 0
-  fi
-
-  if ! /bin/launchctl bootout system "$PLIST_PATH"; then
-    warn "launchctl bootout failed for $PLIST_PATH"
-  fi
+  bootout_launchd_plist "$PLIST_PATH"
+  bootout_launchd_plist "$CAFFEINATE_PLIST_PATH"
 }
 
 cmd_install() {
@@ -396,8 +447,15 @@ cmd_install() {
   write_main_conf
   write_system_main_conf
   write_plist
+  write_caffeinate_plist
   load_pf
   bootstrap_launchd
+}
+
+cmd_install_caffeinate() {
+  require_root
+  write_caffeinate_plist
+  bootstrap_launchd_plist "$CAFFEINATE_PLIST_PATH" "$CAFFEINATE_LABEL"
 }
 
 cmd_apply() {
@@ -429,6 +487,7 @@ cmd_uninstall() {
   require_root
   bootout_launchd
   rm -f "$PLIST_PATH"
+  rm -f "$CAFFEINATE_PLIST_PATH"
 
   if [ -f "$BASE_BACKUP" ]; then
     ensure_dir "$(dirname "$MAIN_CONF")"
@@ -468,6 +527,7 @@ cmd_uninstall() {
 
 cmd_status() {
   printf 'label: %s\n' "$LABEL"
+  printf 'caffeinate_label: %s\n' "$CAFFEINATE_LABEL"
   printf 'current_script: %s\n' "$SELF_PATH"
   printf 'managed_main_conf: %s\n' "$MAIN_CONF"
   printf 'anchor_conf: %s\n' "$ANCHOR_CONF"
@@ -477,6 +537,8 @@ cmd_status() {
   printf 'etc_anchor_conf: %s\n' "$ETC_ANCHOR_CONF"
   printf 'etc_anchor_backup: %s\n' "$ETC_ANCHOR_BACKUP"
   printf 'launchd_plist: %s\n' "$PLIST_PATH"
+  printf 'caffeinate_launchd_plist: %s\n' "$CAFFEINATE_PLIST_PATH"
+  printf 'caffeinate_args: %s\n' "$CAFFEINATE_ARGS"
   printf 'installed_script: %s\n' "$INSTALLED_SCRIPT"
   printf 'main_conf_exists: %s\n' "$( [ -f "$MAIN_CONF" ] && printf yes || printf no )"
   printf 'anchor_exists: %s\n' "$( [ -f "$ANCHOR_CONF" ] && printf yes || printf no )"
@@ -486,6 +548,7 @@ cmd_status() {
   printf 'etc_anchor_conf_exists: %s\n' "$( [ -f "$ETC_ANCHOR_CONF" ] && printf yes || printf no )"
   printf 'etc_anchor_backup_exists: %s\n' "$( [ -f "$ETC_ANCHOR_BACKUP" ] && printf yes || printf no )"
   printf 'launchd_plist_exists: %s\n' "$( [ -f "$PLIST_PATH" ] && printf yes || printf no )"
+  printf 'caffeinate_launchd_plist_exists: %s\n' "$( [ -f "$CAFFEINATE_PLIST_PATH" ] && printf yes || printf no )"
   printf 'managed_marker_present: %s\n' "$( managed_file "$MAIN_CONF" && printf yes || printf no )"
   printf 'etc_managed_marker_present: %s\n' "$( managed_file "$ETC_MAIN_CONF" && printf yes || printf no )"
   printf 'installed_script_needs_update: %s\n' "$( installed_script_needs_update && printf yes || printf no )"
@@ -511,6 +574,9 @@ case "$command" in
   install)
     cmd_install
     ;;
+  install-caffeinate)
+    cmd_install_caffeinate
+    ;;
   uninstall)
     cmd_uninstall
     ;;
@@ -531,6 +597,9 @@ case "$command" in
     ;;
   render-plist)
     render_plist
+    ;;
+  render-caffeinate-plist)
+    render_caffeinate_plist
     ;;
   help|-h|--help)
     usage
