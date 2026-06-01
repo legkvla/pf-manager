@@ -407,8 +407,10 @@ bootstrap_launchd_plist() {
     return 0
   fi
 
-  if ! /bin/launchctl bootout system "$plist"; then
-    warn "launchctl bootout failed for $plist; continuing with bootstrap"
+  if /bin/launchctl print "system/$label" >/dev/null 2>&1; then
+    if ! /bin/launchctl bootout system "$plist"; then
+      warn "launchctl bootout failed for $plist; continuing with bootstrap"
+    fi
   fi
   /bin/launchctl bootstrap system "$plist"
   /bin/launchctl enable "system/$label"
